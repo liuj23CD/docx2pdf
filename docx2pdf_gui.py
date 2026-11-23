@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 DOCX2PDF 图形界面转换器
-使用 docx2pdf 库实现 DOC/DOCX 到 PDF 的完美转换
-支持批量转换和进度显示
-基于 PyQt5 实现
+支持多种转换引擎：docx2pdf (Windows/Mac), win32com (Windows), libreoffice (Linux)
 """
 
 import sys
 import os
 import glob
 import time
+import subprocess
 from pathlib import Path
 
 # 导入 PyQt5
@@ -26,18 +25,40 @@ try:
 except ImportError:
     GUI_AVAILABLE = False
 
-# 导入各种转换引擎
-try:
-    from docx2pdf import convert as docx2pdf_convert
-    DOCX2PDF_AVAILABLE = True
-except ImportError:
-    DOCX2PDF_AVAILABLE = False
+# 检查可用的转换引擎
+def check_engines():
+    """检查可用的转换引擎"""
+    engines = {}
+    
+    # 检查 LibreOffice
+    try:
+        result = subprocess.run(['libreoffice', '--version'], 
+                               capture_output=True, timeout=5)
+        if result.returncode == 0:
+            engines['libreoffice'] = True
+            engines['libreoffice_version'] = result.stdout.decode().strip()
+        else:
+            engines['libreoffice'] = False
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        engines['libreoffice'] = False
+    
+    # 检查 docx2pdf
+    try:
+        from docx2pdf import convert as docx2pdf_convert
+        engines['docx2pdf'] = True
+    except ImportError:
+        engines['docx2pdf'] = False
+    
+    # 检查 win32com
+    try:
+        import win32com.client
+        engines['win32com'] = True
+    except ImportError:
+        engines['win32com'] = False
+    
+    return engines
 
-try:
-    import win32com.client
-    WIN32COM_AVAILABLE = True
-except ImportError:
-    WIN32COM_AVAILABLE = False
+ENGINE_STATUS = check_engines()
 
 
 class ConvertThread(QThread):
@@ -77,13 +98,17 @@ class ConvertThread(QThread):
                 
                 self.log_updated.emit(f"正在转换: {filename}...")
                 
-                if self.engine == "docx2pdf":
+                if self.engine == "libreoffice":
+                    self.convert_with_libreoffice(file_path, output_path)
+                elif self.engine == "docx2pdf":
+                    from docx2pdf import convert as docx2pdf_convert
                     docx2pdf_convert(file_path, output_path)
                 elif self.engine == "win32com":
+                    import win32com.client
                     word = win32com.client.Dispatch("Word.Application")
                     try:
                         doc = word.Documents.Open(file_path)
-                        doc.SaveAs(output_path, FileFormat=17)  # 17 for PDF
+                        doc.SaveAs(output_path, FileFormat=17)
                         doc.Close()
                     finally:
                         word.Quit()
@@ -101,6 +126,19 @@ class ConvertThread(QThread):
         self.log_updated.emit(f"成功: {success_count} 个文件")
         self.log_updated.emit(f"失败: {fail_count} 个文件")
         self.log_updated.emit(f"输出目录: {self.output_dir}")
+    
+    def convert_with_libreoffice(self, input_path, output_path):
+        """使用 LibreOffice 转换文档"""
+        cmd = [
+            'libreoffice',
+            '--headless',
+            '--convert-to', 'pdf',
+            '--outdir', os.path.dirname(output_path),
+            input_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise Exception(f"LibreOffice conversion failed: {result.stderr}")
 
 
 class Docx2PdfGUI(QMainWindow):
@@ -111,7 +149,7 @@ class Docx2PdfGUI(QMainWindow):
         self.files = []
         self.output_dir = str(Path.home() / 'Documents')
         self.convert_thread = None
-        self.engine = "docx2pdf"
+        self.engine = "libreoffice" if ENGINE_STATUS.get('libreoffice') else "docx2pdf"
         self.init_ui()
         
     def init_ui(self):
@@ -136,15 +174,23 @@ class Docx2PdfGUI(QMainWindow):
         engine_layout.addWidget(QLabel('选择引擎:'))
 
         self.engine_combo = QComboBox()
-        if DOCX2PDF_AVAILABLE:
-            self.engine_combo.addItem("docx2pdf (默认, 跨平台)", "docx2pdf")
-        else:
-            self.engine_combo.addItem("docx2pdf (不可用)", "docx2pdf")
-
-        if WIN32COM_AVAILABLE:
-            self.engine_combo.addItem("win32com (Word COM)", "win32com")
-        else:
-            self.engine_combo.addItem("win32com (不可用)", "win32com")
+        
+        # 添加 LibreOffice 选项
+        if ENGINE_STATUS.get('libreoffice'):
+            self.engine_combo.addItem("LibreOffice (Linux推荐)", "libreoffice")
+        
+        # 添加 docx2pdf 选项
+        if ENGINE_STATUS.get('docx2pdf'):
+            self.engine_combo.addItem("docx2pdf (跨平台)", "docx2pdf")
+        
+        # 添加 win32com 选项
+        if ENGINE_STATUS.get('win32com'):
+            self.engine_combo.addItem("Microsoft Word (Windows)", "win32com")
+        
+        # 如果没有可用引擎，显示警告
+        if self.engine_combo.count() == 0:
+            self.engine_combo.addItem("无可用引擎，请安装 LibreOffice 或 docx2pdf", "none")
+            self.engine_combo.setEnabled(False)
         
         self.engine_combo.currentIndexChanged.connect(self.engine_changed)
         engine_layout.addWidget(self.engine_combo)
@@ -346,11 +392,16 @@ class Docx2PdfGUI(QMainWindow):
             QMessageBox.warning(self, '提示', '请选择输出目录!')
             return
             
-        if self.engine == "docx2pdf" and not DOCX2PDF_AVAILABLE:
+        # 检查引擎可用性
+        if self.engine == "libreoffice" and not ENGINE_STATUS.get('libreoffice'):
+            QMessageBox.critical(self, '错误', 'LibreOffice 未安装！\n请安装: sudo apt-get install libreoffice')
+            return
+
+        if self.engine == "docx2pdf" and not ENGINE_STATUS.get('docx2pdf'):
             QMessageBox.critical(self, '错误', 'docx2pdf 未安装！\n请运行: pip install docx2pdf')
             return
 
-        if self.engine == "win32com" and not WIN32COM_AVAILABLE:
+        if self.engine == "win32com" and not ENGINE_STATUS.get('win32com'):
             QMessageBox.critical(self, '错误', 'win32com 未安装或无 Microsoft Word！\n请运行: pip install pywin32')
             return
 
@@ -411,21 +462,29 @@ def main():
     print("=" * 60)
     print("DOCX/DOC 到 PDF 转换器")
     print("=" * 60)
+    print()
     
-    try:
-        import docx2pdf
+    # 显示可用引擎
+    if ENGINE_STATUS.get('libreoffice'):
+        print(f"✓ LibreOffice 可用: {ENGINE_STATUS.get('libreoffice_version', '未知版本')}")
+    else:
+        print("✗ LibreOffice 未安装")
+        print("  Linux 推荐使用 LibreOffice: sudo apt-get install libreoffice")
+    
+    if ENGINE_STATUS.get('docx2pdf'):
         print("✓ docx2pdf 已安装")
-    except ImportError:
+    else:
         print("✗ docx2pdf 未安装")
-        print("如需使用 docx2pdf 引擎，请运行: pip install docx2pdf")
+        print("  如需使用 docx2pdf 引擎，请运行: pip install docx2pdf")
     
-    try:
-        import win32com.client
+    if ENGINE_STATUS.get('win32com'):
         print("✓ win32com 已安装")
-    except ImportError:
+    else:
         print("✗ win32com 未安装")
-        print("如需使用 Microsoft Word 转换引擎，请运行: pip install pywin32")
-
+        print("  如需使用 Microsoft Word 转换引擎，请运行: pip install pywin32")
+    
+    print()
+    
     app = QApplication(sys.argv)
     window = Docx2PdfGUI()
     window.show()
