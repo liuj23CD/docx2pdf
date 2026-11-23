@@ -13,14 +13,31 @@ import glob
 import time
 from pathlib import Path
 
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QLineEdit, QListWidget,
-                            QFileDialog, QLabel, QProgressBar, QTextEdit,
-                            QGroupBox, QCheckBox, QListWidgetItem, QMessageBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont
+# 导入 PyQt5
+try:
+    from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                                QHBoxLayout, QPushButton, QLineEdit, QListWidget,
+                                QFileDialog, QLabel, QProgressBar, QTextEdit,
+                                QGroupBox, QCheckBox, QListWidgetItem, QMessageBox,
+                                QComboBox)
+    from PyQt5.QtCore import Qt, QThread, pyqtSignal
+    from PyQt5.QtGui import QFont
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
 
-from docx2pdf import convert
+# 导入各种转换引擎
+try:
+    from docx2pdf import convert as docx2pdf_convert
+    DOCX2PDF_AVAILABLE = True
+except ImportError:
+    DOCX2PDF_AVAILABLE = False
+
+try:
+    import win32com.client
+    WIN32COM_AVAILABLE = True
+except ImportError:
+    WIN32COM_AVAILABLE = False
 
 
 class ConvertThread(QThread):
@@ -28,11 +45,12 @@ class ConvertThread(QThread):
     progress_updated = pyqtSignal(int, int)
     log_updated = pyqtSignal(str)
     conversion_complete = pyqtSignal(int, int)
-    
-    def __init__(self, files, output_dir):
+
+    def __init__(self, files, output_dir, engine):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
+        self.engine = engine
         self.running = True
         
     def run(self):
@@ -46,8 +64,8 @@ class ConvertThread(QThread):
             return
         
         os.makedirs(self.output_dir, exist_ok=True)
-        self.log_updated.emit(f"开始转换 {total} 个文件...")
-        
+        self.log_updated.emit(f"使用 {self.engine} 引擎开始转换 {total} 个文件...")
+
         for i, file_path in enumerate(self.files):
             if not self.running:
                 break
@@ -58,15 +76,25 @@ class ConvertThread(QThread):
                                           os.path.splitext(filename)[0] + '.pdf')
                 
                 self.log_updated.emit(f"正在转换: {filename}...")
-                convert(file_path, output_path)
                 
+                if self.engine == "docx2pdf":
+                    docx2pdf_convert(file_path, output_path)
+                elif self.engine == "win32com":
+                    word = win32com.client.Dispatch("Word.Application")
+                    try:
+                        doc = word.Documents.Open(file_path)
+                        doc.SaveAs(output_path, FileFormat=17)  # 17 for PDF
+                        doc.Close()
+                    finally:
+                        word.Quit()
+
                 success_count += 1
                 self.progress_updated.emit(success_count + fail_count, total)
-                self.log_updated.emit(f"✓ 成功: {filename} -> {os.path.basename(output_path)}")
+                self.log_updated.emit(f"成功: {filename} -> {os.path.basename(output_path)}")
                 
             except Exception as e:
                 fail_count += 1
-                self.log_updated.emit(f"✗ 失败: {os.path.basename(file_path)} - {str(e)}")
+                self.log_updated.emit(f"失败: {os.path.basename(file_path)} - {str(e)}")
         
         self.conversion_complete.emit(success_count, fail_count)
         self.log_updated.emit(f"\n=== 转换完成 ===")
@@ -83,6 +111,7 @@ class Docx2PdfGUI(QMainWindow):
         self.files = []
         self.output_dir = str(Path.home() / 'Documents')
         self.convert_thread = None
+        self.engine = "docx2pdf"
         self.init_ui()
         
     def init_ui(self):
@@ -100,6 +129,28 @@ class Docx2PdfGUI(QMainWindow):
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setStyleSheet('color: #1a73e8;')
         main_layout.addWidget(title_label)
+        
+        # 引擎选择区域
+        engine_group = QGroupBox('转换引擎')
+        engine_layout = QHBoxLayout()
+        engine_layout.addWidget(QLabel('选择引擎:'))
+
+        self.engine_combo = QComboBox()
+        if DOCX2PDF_AVAILABLE:
+            self.engine_combo.addItem("docx2pdf (默认, 跨平台)", "docx2pdf")
+        else:
+            self.engine_combo.addItem("docx2pdf (不可用)", "docx2pdf")
+
+        if WIN32COM_AVAILABLE:
+            self.engine_combo.addItem("win32com (Word COM)", "win32com")
+        else:
+            self.engine_combo.addItem("win32com (不可用)", "win32com")
+        
+        self.engine_combo.currentIndexChanged.connect(self.engine_changed)
+        engine_layout.addWidget(self.engine_combo)
+
+        engine_group.setLayout(engine_layout)
+        main_layout.addWidget(engine_group)
         
         # 文件选择区域
         file_group = QGroupBox('选择文件')
@@ -210,6 +261,11 @@ class Docx2PdfGUI(QMainWindow):
         main_layout.setStretch(4, 2)
         main_layout.setStretch(5, 3)
         
+    def engine_changed(self):
+        """引擎改变回调"""
+        idx = self.engine_combo.currentIndex()
+        self.engine = self.engine_combo.itemData(idx, role=Qt.UserRole)
+
     def browse_file(self):
         """浏览选择文件"""
         files, _ = QFileDialog.getOpenFileNames(
@@ -290,17 +346,25 @@ class Docx2PdfGUI(QMainWindow):
             QMessageBox.warning(self, '提示', '请选择输出目录!')
             return
             
+        if self.engine == "docx2pdf" and not DOCX2PDF_AVAILABLE:
+            QMessageBox.critical(self, '错误', 'docx2pdf 未安装！\n请运行: pip install docx2pdf')
+            return
+
+        if self.engine == "win32com" and not WIN32COM_AVAILABLE:
+            QMessageBox.critical(self, '错误', 'win32com 未安装或无 Microsoft Word！\n请运行: pip install pywin32')
+            return
+
         self.convert_btn.setEnabled(False)
         self.status_label.setText('转换中...')
         self.status_label.setStyleSheet('color: orange;')
         self.progress_bar.setValue(0)
         self.count_label.setText('0/0 文件已转换')
-        
-        self.convert_thread = ConvertThread(self.files, self.output_dir)
+
+        self.convert_thread = ConvertThread(self.files, self.output_dir, self.engine)
         self.convert_thread.progress_updated.connect(self.update_progress)
         self.convert_thread.log_updated.connect(self.log_message)
         self.convert_thread.conversion_complete.connect(self.conversion_complete)
-        self.convert_thread.started.connect(lambda: self.log_message(f"开始转换 {len(self.files)} 个文件..."))
+        self.convert_thread.started.connect(lambda: self.log_message(f"使用 {self.engine} 引擎开始转换 {len(self.files)} 个文件..."))
         self.convert_thread.start()
         
     def batch_convert(self):
@@ -339,6 +403,11 @@ class Docx2PdfGUI(QMainWindow):
 
 def main():
     """主函数"""
+    if not GUI_AVAILABLE:
+        print("错误: PyQt5 未安装")
+        print("请运行: pip install PyQt5")
+        return
+        
     print("=" * 60)
     print("DOCX/DOC 到 PDF 转换器")
     print("=" * 60)
@@ -348,17 +417,15 @@ def main():
         print("✓ docx2pdf 已安装")
     except ImportError:
         print("✗ docx2pdf 未安装")
-        print("请运行: pip install docx2pdf")
-        return
+        print("如需使用 docx2pdf 引擎，请运行: pip install docx2pdf")
     
     try:
-        from PyQt5.QtWidgets import QApplication
-        print("✓ PyQt5 已安装")
+        import win32com.client
+        print("✓ win32com 已安装")
     except ImportError:
-        print("✗ PyQt5 未安装")
-        print("请运行: pip install PyQt5")
-        return
-    
+        print("✗ win32com 未安装")
+        print("如需使用 Microsoft Word 转换引擎，请运行: pip install pywin32")
+
     app = QApplication(sys.argv)
     window = Docx2PdfGUI()
     window.show()
