@@ -24,6 +24,10 @@ REM 安装 PyInstaller（如果尚未安装）
 echo 正在安装 PyInstaller...
 pip install pyinstaller --quiet
 
+REM 安装 win32com（如果尚未安装）
+echo 正在安装 win32com...
+pip install pywin32 --quiet
+
 REM 清理之前的构建
 echo 清理之前的构建文件...
 if exist "build" rmdir /s /q build
@@ -40,6 +44,7 @@ pyinstaller --name DOCX2PDF ^
   --windowed ^
   --add-data "docx2pdf_gui.py;." ^
   --hidden-import=docx2pdf ^
+  --hidden-import=win32com ^
   --hidden-import=PyQt5 ^
   --hidden-import=PyQt5.QtWidgets ^
   --hidden-import=PyQt5.QtCore ^
@@ -67,3 +72,4 @@ if exist "dist\DOCX2PDF.exe" (
 
 REM 保持命令提示符窗口打开
 pause
+

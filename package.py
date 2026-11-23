@@ -43,6 +43,14 @@ def check_dependencies():
         print("请运行: pip install docx2pdf")
         return False
     
+    # 检查 win32com
+    try:
+        import win32com
+        print("✓ win32com 已安装")
+    except ImportError:
+        print("✗ win32com 未安装")
+        print("如需使用 Windows Word COM 引擎，请运行: pip install pywin32")
+
     # 检查 PyQt5
     try:
         from PyQt5.QtWidgets import QApplication
@@ -77,6 +85,7 @@ def package_win32(output_dir='dist'):
         '--icon=None',  # 可以添加图标
         '--add-data', f'{PROJECT_DIR / "docx2pdf_gui.py"};.',
         '--hidden-import=docx2pdf',
+        '--hidden-import=win32com',
         '--hidden-import=PyQt5',
         '--hidden-import=PyQt5.QtWidgets',
         '--hidden-import=PyQt5.QtCore',
@@ -115,6 +124,7 @@ def package_linux(output_dir='dist'):
         '--onefile',
         '--add-data', f'{PROJECT_DIR / "docx2pdf_gui.py"}:.',
         '--hidden-import=docx2pdf',
+        '--hidden-import=win32com',
         '--hidden-import=PyQt5',
         '--hidden-import=PyQt5.QtWidgets',
         '--hidden-import=PyQt5.QtCore',
@@ -198,3 +208,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
